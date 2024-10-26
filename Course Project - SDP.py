@@ -39,7 +39,7 @@ data = {
 def Obj_first_stage(m):
         return -sum(m.x_aFRR[t] * m.P_aFRR[t] for t in m.T) + m.alpha
 def ReserveMarketLimit_first_stage(m, t):
-        return m.x_aFRR[t] <= 12 #max batter discharge
+        return m.x_aFRR[t] <= 12 #max battery discharge
 def Optimality_cut(m, c):           # Create Benders Optimality cuts from first stage
         return m.alpha >= m.Phi[c] + sum(m.Lambda[c, t] * (m.x_aFRR[t] - m.x_hat[c, t])\
         for t in m.T)
@@ -183,7 +183,6 @@ def Second_stage_model(data, constants, x_hat):
     return m
 
 # Function for creating new linear cuts for optimization problem (Inspired by code given as example for Benders decomposition in class)
-
 def Create_cuts(Cuts, m):
     cut_it = len(Cuts["Set"])  # Find the current cut iteration index
     Cuts["Set"].append(cut_it)  # Add a new cut to the set
@@ -198,14 +197,6 @@ def Create_cuts(Cuts, m):
 
     return(Cuts)
 
-
-#Setup for Benders decomposition - Perform this for x-iterations
-Cuts = {}
-Cuts["Set"] = []
-Cuts["Phi"] = {}
-Cuts["lambda"] = {}
-Cuts["x_hat"] = {}
-
 # Solve the model
 def SolveModel(m): 
     solver = SolverFactory('gurobi')
@@ -215,70 +206,156 @@ def SolveModel(m):
     return results, m
 
 
-# Display results
-def DisplayResults(m):
-    return print(m.display(), m.dual.display())
+#New function for doing Benders decomposition
+def Benders_decomposition(data, constants, Cuts):
 
+    #Setup for Benders decomposition - Perform this for x-iterations
+    Cuts = {}
+    Cuts["Set"] = []
+    Cuts["Phi"] = {}
+    Cuts["lambda"] = {}
+    Cuts["x_hat"] = {}
 
+    import time
+    initial_time = time.time()
 
+    #Using a for loop for iteration
+    for i in range(10):
 
+        #Solve 1st stage problem
+        m_first_stage = First_stage_model(data, constants, Cuts)
+        SolveModel(m_first_stage)
+    
+        #First stage result process with x_hat value using numerical indices
+        x_hat = {t: pyo.value(m_first_stage.x_aFRR[t]) \
+        for t in range(1, constants["time_periods"] + 1)}
 
-#Using a for loop for iteration
-for i in range(10):
+    
+        
+        #Printing first stage results
+        print(f"Iteration {i}")
+        for t in x_hat:
+            print(f"t{t}: {x_hat[t]}")
+        #input()
 
-    #Solve 1st stage problem
+        #Setup and solve 2nd stage problem
+        m_second_stage = Second_stage_model(data, constants, x_hat)
+        SolveModel(m_second_stage)
+
+        # Print the slack variables for each time period and scenario
+        for t in m_second_stage.T:
+            x_aFRR = pyo.value(m_second_stage.x_aFRR[t])
+            print(f"Iteration {i}, Time {t} x_aFRR: {x_aFRR}")
+            for s in m_second_stage.S:
+                slack_value = pyo.value(m_second_stage.slack_energy_balance[t,s])
+                print(f"Iteration {i}, Time {t} Slack: {slack_value}")
+
+        #Creating cuts for the first stage model
+        Cuts = Create_cuts(Cuts,m_second_stage)
+        
+        #Print results for second stage
+        print("UB:",pyo.value(m_first_stage.alpha.value),"- LB:",pyo.value(m_second_stage.obj))
+        print("Objective value of problem:", pyo.value(m_second_stage.obj()-\
+        m_first_stage.x_aFRR[1].value*1000-m_first_stage.x_aFRR[2]*1000)) 
+        print("Cut information acquired:")
+        for component in Cuts:
+            if component == "lambda" or component == "x_hat":
+                for t in m_second_stage.T:
+                    # Check if t exists in Cuts[component]
+                    if t in Cuts[component]:
+                        print(component, t, Cuts[component][t])
+                    
+            else:
+                print(component, Cuts[component])
+
+        #input()
+
+        #Performing a convergence check with upper and lower bound
+        print("UB:",pyo.value(m_first_stage.alpha.value),"- LB:",pyo.value(m_second_stage.obj))
+
+        #input()
+        print(time.time()-initial_time)
+        return()
+    
+import pandas as pd
+
+# Function to export results to Excel after Stochastic Dynamic Programming
+import pandas as pd
+
+# Function to export results to Excel after Stochastic Dynamic Programming
+def Stochastic_Dynamic_Programming():
+    # Initial setup for SDP
+    Minimum = 0
+    Maximum = 12  # Max battery discharge capacity
+    jump_size = 1
+    List_of_jumps = [i for i in range(Minimum, Maximum + jump_size, jump_size)]
+
+    # Initial values for the decision variable in the first stage
+    x_aFRR_initial_values = List_of_jumps
+
+    # Initialize cuts
+    Cuts = {}
+    Cuts["Set"] = []
+    Cuts["Phi"] = {}
+    Cuts["lambda"] = {}
+    Cuts["x_hat"] = {}
+
+    # Collect results to export to Excel
+    results = {
+        "Time Period": [],
+        "Scenario": [],        # Added "Scenario" key
+        "x_hat": [],
+        "z_export": [],
+        "y_supply": [],
+        "q_charge": [],
+        "q_discharge": [],
+        "e_storage": []
+    }
+
+    for initial_value in x_aFRR_initial_values:
+        # Define x_hat as a dictionary indexed by time periods
+        X_hat = {t: initial_value for t in range(1, constants["time_periods"] + 1)}
+        
+        # If combination is valid, solve the second stage problem
+        if all(X_hat[t] <= Maximum for t in X_hat):
+            # Setup and solve the second-stage problem
+            m_second_stage = Second_stage_model(data, constants, X_hat)
+            SolveModel(m_second_stage)
+
+            # Create cuts for the first stage model
+            Cuts = Create_cuts(Cuts, m_second_stage)
+        else:
+            continue
+
+    # Solve the first stage with the created cuts
     m_first_stage = First_stage_model(data, constants, Cuts)
     SolveModel(m_first_stage)
+
+    # Get the value of x_hat from the first-stage solution
+    X_hat = {t: pyo.value(m_first_stage.x_aFRR[t]) for t in range(1, constants["time_periods"] + 1)}
+
+   # Store the results for all scenarios in the dictionary
+    for t in X_hat:
+        for scenario in constants["scenarios"]:
+            results["Time Period"].append(t)
+            results["Scenario"].append(scenario)  # Storing scenario here
+            results["x_hat"].append(X_hat[t])
+            results["z_export"].append(pyo.value(m_second_stage.z_export[t, scenario]))
+            results["y_supply"].append(pyo.value(m_second_stage.y_supply[t, scenario, "Grid"]))
+            results["q_charge"].append(pyo.value(m_second_stage.q_charge[t, scenario]))
+            results["q_discharge"].append(pyo.value(m_second_stage.q_discharge[t, scenario]))
+            results["e_storage"].append(pyo.value(m_second_stage.e_storage[t]))
     
+    # Create a DataFrame from the results
+    df_results = pd.DataFrame(results)
 
-    #First stage result process with x_hat value
-    #First stage result process with x_hat value using numerical indices
-    x_hat = {t: pyo.value(m_first_stage.x_aFRR[t]) \
-    for t in range(1, constants["time_periods"] + 1)}
+    # Export the DataFrame to Excel
+    excel_filename = "SDP_results.xlsx"
+    df_results.to_excel(excel_filename, index=False)
 
-  
-    
-    #Printing first stage results
-    print(f"Iteration {i}")
-    for t in x_hat:
-        print(f"t{t}: {x_hat[t]}")
-    input()
+    print(f"Results have been saved to {excel_filename}")
 
-    #Setup and solve 2nd stage problem
-    m_second_stage = Second_stage_model(data, constants, x_hat)
-    SolveModel(m_second_stage)
+    return df_results
 
-    # Print the slack variables for each time period and scenario
-    for t in m_second_stage.T:
-        x_aFRR = pyo.value(m_second_stage.x_aFRR[t])
-        print(f"Iteration {i}, Time {t} x_aFRR: {x_aFRR}")
-        for s in m_second_stage.S:
-            slack_value = pyo.value(m_second_stage.slack_energy_balance[t,s])
-            print(f"Iteration {i}, Time {t} Slack: {slack_value}")
-
-    #Creating cuts for the first stage model
-    Cuts = Create_cuts(Cuts,m_second_stage)
-    
-    #Print results for second stage
-    print("UB:",pyo.value(m_first_stage.alpha.value),"- LB:",pyo.value(m_second_stage.obj))
-    print("Objective value of problem:", pyo.value(m_second_stage.obj()-\
-    m_first_stage.x_aFRR[1].value*1000-m_first_stage.x_aFRR[2]*1000)) 
-    print("Cut information acquired:")
-    for component in Cuts:
-        if component == "lambda" or component == "x_hat":
-            for t in m_second_stage.T:
-                # Check if t exists in Cuts[component]
-                if t in Cuts[component]:
-                    print(component, t, Cuts[component][t])
-                
-        else:
-            print(component, Cuts[component])
-
-    input()
-    
-
-
-#Performing a convergence check with upper and lower bound
-print("UB:",pyo.value(m_first_stage.alpha.value),"- LB:",pyo.value(m_second_stage.obj))
-
-input()
+# Calling the function to execute and export results
+Stochastic_Dynamic_Programming()
