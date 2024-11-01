@@ -17,7 +17,7 @@ data = {
     'Cost_grid': [1300, 700],
     'Cost_solar': 0,  # Solar has zero marginal cost
     'Cost_battery': 0,
-    'aFRR_price': 1000,  # aFRR price 
+    'aFRR_price': 1275,  # aFRR price 
     'Energy_demand': [240, 120],  # Constant demand for simplicity
     
     'Solar_generation': {  # Solar generation also varies
@@ -25,13 +25,13 @@ data = {
         'S_avg': [14.4,0],  # Average solar generation
         'S_low': [6,0],  # Low solar generation
     },
-    'Battery_charge_eff': 0.9,
+    'Battery_charge_eff': 1.1,
     'Battery_discharge_eff': 0.9,
     'Max_battery_capacity': 60,
-    'Max_battery_charge': 12,
-    'Max_battery_discharge': 12,
-    'Grid_capacity': 240,
-    'Initial_battery_storage': 30
+    'Max_battery_charge_discharge': 12,
+    #'Max_battery_discharge': 12,
+    'Grid_capacity': 300,
+    'Initial_battery_storage': 12
 }
 
 
@@ -39,7 +39,7 @@ data = {
 def Obj_first_stage(m):
         return -sum(m.x_aFRR[t] * m.P_aFRR[t] for t in m.T) + m.alpha
 def ReserveMarketLimit_first_stage(m, t):
-        return m.x_aFRR[t] <= 12 #max battery discharge
+        return m.x_aFRR[t] <= m.P_max #max battery discharge
 def Optimality_cut(m, c):           # Create Benders Optimality cuts from first stage
         return m.alpha >= m.Phi[c] + sum(m.Lambda[c, t] * (m.x_aFRR[t] - m.x_hat[c, t])\
         for t in m.T)
@@ -61,18 +61,24 @@ def ReserveMarketLimit_sec(m, t, s):
         return m.x_aFRR[t] <=  m.q_discharge[t,s] + m.slack_energy_balance[t, s] 
 def StorageDynamics(m, t, s):
         if t == 1:
-            return m.e_storage[t] == m.I_INIT + m.q_charge[t, s] -\
-            m.q_discharge[t, s] / m.eta_discharge - m.x_aFRR[t] 
+            return m.e_storage[t, s] == m.I_INIT + m.q_charge[t, s] -\
+            m.q_discharge[t, s] / m.eta_discharge 
         else:
-            return m.e_storage[t] == m.e_storage[t-1] + m.q_charge[t, s] -\
-            m.q_discharge[t, s] / m.eta_discharge - m.x_aFRR[t] 
+            return m.e_storage[t, s] == m.e_storage[t-1, s] + m.q_charge[t, s] -\
+            m.q_discharge[t, s] / m.eta_discharge 
         
-def BatteryLimits(m, t):
-    return m.e_storage[t] <= m.E_max
+def BatteryLimits(m, t, s):
+    return m.e_storage[t, s] <= m.E_max
 def ChargeLimit(m, t, s):
-    return m.q_charge[t, s] <= m.P_charge_max
-def DischargeLimit(m, t, s):
-    return m.q_discharge[t, s] <= m.P_discharge_max
+    return m.q_charge[t, s] + m.q_discharge[t, s]/m.eta_discharge <= m.P_max
+#def DischargeLimit(m, t, s):
+#    return m.q_discharge[t, s] <= m.P_discharge_max
+def EnsureCapacityForaFRR(m, t, s):
+        if t == 1:
+            return m.I_INIT >= m.x_aFRR[t]
+        else:
+            return m.e_storage[t-1, s] - m.x_aFRR[t] >= 0 
+        
 def ImportLimit(m, t, s):
     return m.y_supply[t, s, 'Grid'] <= m.G_max
 def SolarPowerLimit(m, t, s):
@@ -95,6 +101,7 @@ def First_stage_model(data, constants, Cuts):
     # Parameters
     m.P_aFRR = pyo.Param(m.T, initialize=data['aFRR_price'])  # aFRR price
     m.G_max = pyo.Param(initialize=data['Grid_capacity'])  # Grid capacity limit
+    m.P_max = pyo.Param(initialize=data['Max_battery_charge_discharge'])
 
 
     # Parameters for cuts
@@ -144,8 +151,8 @@ def Second_stage_model(data, constants, x_hat):
     m.eta_charge = pyo.Param(initialize=data['Battery_charge_eff'])
     m.eta_discharge = pyo.Param(initialize=data['Battery_discharge_eff'])
     m.E_max = pyo.Param(initialize=data['Max_battery_capacity'])
-    m.P_charge_max = pyo.Param(initialize=data['Max_battery_charge'])
-    m.P_discharge_max = pyo.Param(initialize=data['Max_battery_discharge'])
+    m.P_max = pyo.Param(initialize=data['Max_battery_charge_discharge'])
+    #m.P_discharge_max = pyo.Param(initialize=data['Max_battery_discharge'])
     m.G_max = pyo.Param(initialize=data['Grid_capacity'])
     m.I_INIT = pyo.Param(initialize=data['Initial_battery_storage'])
     m.pi = pyo.Param(m.S, initialize=constants["probs"])  # Probability of each scenario
@@ -160,7 +167,7 @@ def Second_stage_model(data, constants, x_hat):
     m.q_charge = pyo.Var(m.T, m.S, within=pyo.NonNegativeReals)  # Battery charge
     m.q_discharge = pyo.Var(m.T, m.S, within=pyo.NonNegativeReals)  # Battery discharge
     # Battery energy storage (shared across scenarios)
-    m.e_storage = pyo.Var(m.T, within=pyo.NonNegativeReals, bounds=(0, m.E_max))
+    m.e_storage = pyo.Var(m.T,m.S, within=pyo.NonNegativeReals, bounds=(0, m.E_max))
     # Add artificial variables to the model to account for infeasibilities
     m.slack_energy_balance = pyo.Var(m.T, m.S, within=pyo.NonNegativeReals)
 
@@ -171,9 +178,10 @@ def Second_stage_model(data, constants, x_hat):
     m.EnergyBalance_sec = pyo.Constraint(m.T, m.S, rule=EnergyBalance_sec)
     m.ReserveMarketLimit_sec = pyo.Constraint(m.T,m.S, rule=ReserveMarketLimit_sec)
     m.StorageDynamics = pyo.Constraint(m.T, m.S, rule=StorageDynamics)
-    m.BatteryLimits = pyo.Constraint(m.T, rule=BatteryLimits)
+    m.BatteryLimits = pyo.Constraint(m.T, m.S, rule=BatteryLimits)
     m.ChargeLimit = pyo.Constraint(m.T, m.S, rule=ChargeLimit)
-    m.DischargeLimit = pyo.Constraint(m.T, m.S, rule=DischargeLimit)
+    #m.DischargeLimit = pyo.Constraint(m.T, m.S, rule=DischargeLimit)
+    m.EnsureCapacityForaFRR = pyo.Constraint(m.T, m.S, rule=EnsureCapacityForaFRR)
     #m.BatterySupplyLimit = pyo.Constraint(m.T, m.S, rule=BatterySupplyLimit)
     m.ImportLimit = pyo.Constraint(m.T, m.S, rule=ImportLimit)
     m.SolarPowerLimit = pyo.Constraint(m.T, m.S, rule=SolarPowerLimit)
@@ -256,7 +264,7 @@ def Benders_decomposition(data, constants, Cuts):
         #Print results for second stage
         print("UB:",pyo.value(m_first_stage.alpha.value),"- LB:",pyo.value(m_second_stage.obj))
         print("Objective value of problem:", pyo.value(m_second_stage.obj()-\
-        m_first_stage.x_aFRR[1].value*1000-m_first_stage.x_aFRR[2]*1000)) 
+        m_first_stage.x_aFRR[1].value*1275-m_first_stage.x_aFRR[2]*1275)) 
         print("Cut information acquired:")
         for component in Cuts:
             if component == "lambda" or component == "x_hat":
@@ -344,7 +352,7 @@ def Stochastic_Dynamic_Programming():
             results["y_supply"].append(pyo.value(m_second_stage.y_supply[t, scenario, "Grid"]))
             results["q_charge"].append(pyo.value(m_second_stage.q_charge[t, scenario]))
             results["q_discharge"].append(pyo.value(m_second_stage.q_discharge[t, scenario]))
-            results["e_storage"].append(pyo.value(m_second_stage.e_storage[t]))
+            results["e_storage"].append(pyo.value(m_second_stage.e_storage[t, scenario]))
     
     # Create a DataFrame from the results
     df_results = pd.DataFrame(results)
@@ -354,7 +362,6 @@ def Stochastic_Dynamic_Programming():
     df_results.to_excel(excel_filename, index=False)
 
     print(f"Results have been saved to {excel_filename}")
-
     return df_results
 
 # Calling the function to execute and export results
