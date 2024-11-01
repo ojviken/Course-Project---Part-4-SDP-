@@ -2,6 +2,7 @@ import pandas as pd
 import pyomo.environ as pyo
 from pyomo.opt import SolverFactory
 import matplotlib.pyplot as plt
+import numpy as np  
 
 # Constants
 constants = {
@@ -295,8 +296,8 @@ def Stochastic_Dynamic_Programming():
     # Initial setup for SDP
     Minimum = 0
     Maximum = 12  # Max battery discharge capacity
-    jump_size = 1
-    List_of_jumps = [i for i in range(Minimum, Maximum + jump_size, jump_size)]
+    num_points = 100
+    List_of_jumps = np.linspace(Minimum, Maximum, num_points).tolist()
 
     # Initial values for the decision variable in the first stage
     x_aFRR_initial_values = List_of_jumps
