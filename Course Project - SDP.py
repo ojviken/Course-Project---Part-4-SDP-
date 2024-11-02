@@ -214,9 +214,12 @@ def SolveModel(m):
     
     return results, m
 
+def DisplayResults(m):
+     return print(m.display(), m.dual.display())
+
 
 #New function for doing Benders decomposition
-def Benders_decomposition(data, constants, Cuts):
+def Benders_decomposition():
 
     #Setup for Benders decomposition - Perform this for x-iterations
     Cuts = {}
@@ -229,7 +232,7 @@ def Benders_decomposition(data, constants, Cuts):
     initial_time = time.time()
 
     #Using a for loop for iteration
-    for i in range(10):
+    for i in range(15):
 
         #Solve 1st stage problem
         m_first_stage = First_stage_model(data, constants, Cuts)
@@ -245,7 +248,7 @@ def Benders_decomposition(data, constants, Cuts):
         print(f"Iteration {i}")
         for t in x_hat:
             print(f"t{t}: {x_hat[t]}")
-        #input()
+        input()
 
         #Setup and solve 2nd stage problem
         m_second_stage = Second_stage_model(data, constants, x_hat)
@@ -277,30 +280,29 @@ def Benders_decomposition(data, constants, Cuts):
             else:
                 print(component, Cuts[component])
 
-        #input()
+        input()
 
         #Performing a convergence check with upper and lower bound
-        print("UB:",pyo.value(m_first_stage.alpha.value),"- LB:",pyo.value(m_second_stage.obj))
+        print("UB:",pyo.value(m_first_stage.alpha),"- LB:",pyo.value(m_second_stage.obj))
 
         #input()
         print(time.time()-initial_time)
-        return()
-    
-import pandas as pd
-
-# Function to export results to Excel after Stochastic Dynamic Programming
-import pandas as pd
+        
 
 # Function to export results to Excel after Stochastic Dynamic Programming
 def Stochastic_Dynamic_Programming():
     # Initial setup for SDP
     Minimum = 0
-    Maximum = 12  # Max battery discharge capacity
-    num_points = 100
+    Maximum = 12 * 0.9 # Max aFRR participation
+    num_points = 13 #Antall diskrete punkter
     List_of_jumps = np.linspace(Minimum, Maximum, num_points).tolist()
-
+    
     # Initial values for the decision variable in the first stage
-    x_aFRR_initial_values = List_of_jumps
+    x_aFRR_initial_values_1 = List_of_jumps
+    x_aFRR_initial_values_2 = List_of_jumps
+
+    import itertools
+    List_combinations = [p for p in itertools.product(x_aFRR_initial_values_1,x_aFRR_initial_values_2)]
 
     # Initialize cuts
     Cuts = {}
@@ -321,14 +323,14 @@ def Stochastic_Dynamic_Programming():
         "e_storage": []
     }
 
-    for initial_value in x_aFRR_initial_values:
+    for initial_value in List_combinations:
         # Define x_hat as a dictionary indexed by time periods
-        X_hat = {t: initial_value for t in range(1, constants["time_periods"] + 1)}
-        
+        x_hat = {1: initial_value[0], 2: initial_value[1]}
+        print(x_hat)
         # If combination is valid, solve the second stage problem
-        if all(X_hat[t] <= Maximum for t in X_hat):
+        if all(x_hat[t] <= Maximum  for t in x_hat):
             # Setup and solve the second-stage problem
-            m_second_stage = Second_stage_model(data, constants, X_hat)
+            m_second_stage = Second_stage_model(data, constants, x_hat)
             SolveModel(m_second_stage)
 
             # Create cuts for the first stage model
@@ -341,19 +343,26 @@ def Stochastic_Dynamic_Programming():
     SolveModel(m_first_stage)
 
     # Get the value of x_hat from the first-stage solution
-    X_hat = {t: pyo.value(m_first_stage.x_aFRR[t]) for t in range(1, constants["time_periods"] + 1)}
+    x_hat = {1: m_first_stage.x_aFRR[1], 2: m_first_stage.x_aFRR[2]}
+
+    for x in x_hat:
+        print(x, x_hat[x].value)
+    print(pyo.value(m_first_stage.alpha.value))
+
+    
 
    # Store the results for all scenarios in the dictionary
-    for t in X_hat:
+    for t in x_hat:
         for scenario in constants["scenarios"]:
             results["Time Period"].append(t)
             results["Scenario"].append(scenario)  # Storing scenario here
-            results["x_hat"].append(X_hat[t])
+            results["x_hat"].append(x_hat[t].value)
             results["z_export"].append(pyo.value(m_second_stage.z_export[t, scenario]))
             results["y_supply"].append(pyo.value(m_second_stage.y_supply[t, scenario, "Grid"]))
             results["q_charge"].append(pyo.value(m_second_stage.q_charge[t, scenario]))
             results["q_discharge"].append(pyo.value(m_second_stage.q_discharge[t, scenario]))
             results["e_storage"].append(pyo.value(m_second_stage.e_storage[t, scenario]))
+            
     
     # Create a DataFrame from the results
     df_results = pd.DataFrame(results)
@@ -365,5 +374,9 @@ def Stochastic_Dynamic_Programming():
     print(f"Results have been saved to {excel_filename}")
     return df_results
 
+
+
+# Calling Benders
+Benders_decomposition()
 # Calling the function to execute and export results
-Stochastic_Dynamic_Programming()
+#Stochastic_Dynamic_Programming()
