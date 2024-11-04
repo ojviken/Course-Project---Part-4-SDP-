@@ -11,6 +11,7 @@ constants = {
     "scenarios": ["S_high", "S_avg", "S_low"],
     #####CHANGING THESE VALUES WHEN SOLVING FOR EACH SCENARIO INDIVIDUALLY#####
     "probs": {"S_high": 0.3, "S_avg": 0.5, "S_low": 0.2}
+    #"probs": {"S_high": 0, "S_avg": 1, "S_low": 0}
 }
 
 # Input Data
@@ -31,7 +32,7 @@ data = {
     'Max_battery_capacity': 60,
     'Max_battery_charge_discharge': 12,
     #'Max_battery_discharge': 12,
-    'Grid_capacity': 300,
+    'Grid_capacity': 500,
     'Initial_battery_storage': 12
 }
 
@@ -40,11 +41,11 @@ data = {
 def Obj_first_stage(m):
         return -sum(m.x_aFRR[t] * m.P_aFRR[t] for t in m.T) + m.alpha
 def ReserveMarketLimit_first_stage(m, t):
-        return m.x_aFRR[t] <= m.P_max #max battery discharge
+        return m.x_aFRR[t] <= m.P_max * 0.9 #max battery discharge
 def Optimality_cut(m, c):           # Create Benders Optimality cuts from first stage
         return m.alpha >= m.Phi[c] + sum(m.Lambda[c, t] * (m.x_aFRR[t] - m.x_hat[c, t])\
         for t in m.T)
-
+ 
 
 #Mathematical formulation second stage
 def Obj_second_stage(m):
@@ -56,10 +57,10 @@ def Obj_second_stage(m):
         for t in m.T) for s in m.S)
 def EnergyBalance_sec(m, t, s):
         return m.D[t] + m.x_aFRR[t] == sum(m.y_supply[t, s, i] for i in m.I) -\
-        m.z_export[t, s] + m.q_discharge[t, s] - m.eta_charge * m.q_charge[t, s] +\
-        m.slack_energy_balance[t, s]
+        m.z_export[t, s] + m.q_discharge[t, s] - m.eta_charge * m.q_charge[t, s] #+\
+        #m.slack_energy_balance[t, s]
 def ReserveMarketLimit_sec(m, t, s):
-        return m.x_aFRR[t] <=  m.q_discharge[t,s] + m.slack_energy_balance[t, s] 
+        return m.x_aFRR[t] <=  m.q_discharge[t,s] #+ m.slack_energy_balance[t, s] 
 def StorageDynamics(m, t, s):
         if t == 1:
             return m.e_storage[t, s] == m.I_INIT + m.q_charge[t, s] -\
@@ -71,7 +72,7 @@ def StorageDynamics(m, t, s):
 def BatteryLimits(m, t, s):
     return m.e_storage[t, s] <= m.E_max
 def ChargeLimit(m, t, s):
-    return m.q_charge[t, s] + m.q_discharge[t, s]/m.eta_discharge <= m.P_max
+    return m.q_charge[t, s] + m.q_discharge[t, s]/m.eta_discharge <= m.P_max + m.slack_energy_balance[t, s]
 #def DischargeLimit(m, t, s):
 #    return m.q_discharge[t, s] <= m.P_discharge_max
 def EnsureCapacityForaFRR(m, t, s):
@@ -85,9 +86,9 @@ def ImportLimit(m, t, s):
 def SolarPowerLimit(m, t, s):
     return m.y_supply[t, s, 'Solar'] == m.G_solar[t, s]
 def ExportLimit_sec(m, t, s):
-    return m.z_export[t, s] + m.x_aFRR[t] <= m.G_max + m.slack_energy_balance[t, s]
+    return m.z_export[t, s] + m.x_aFRR[t] <= m.G_max #+ m.slack_energy_balance[t, s]
 def Lambda_constraint(m, t):
-    return m.x_aFRR[t] == m.x_hat[t]
+    return m.x_aFRR[t] == m.X_hat[t]
     
 
 
@@ -112,20 +113,21 @@ def First_stage_model(data, constants, Cuts):
 
     # Variables
     m.x_aFRR = pyo.Var(m.T, within=pyo.NonNegativeReals)  # aFRR reserve (first-stage decision)
-    m.alpha = pyo.Var(bounds=(0, 1000000))  # Approximates second-stage cost
+    m.alpha = pyo.Var(bounds=(-100000000, 100000000000))  # Approximates second-stage cost
 
-    # Objective: minimize first-stage cost with the approximation of the second-stage cost (alpha)
-    m.obj = pyo.Objective(rule=Obj_first_stage, sense=pyo.minimize)
+   
     # Constraints
     m.ReserveMarketLimit_first_stage = pyo.Constraint(m.T, rule=ReserveMarketLimit_first_stage)
     m.Optimality_cut = pyo.Constraint(m.C, rule=Optimality_cut)
-    
+
+     # Objective: minimize first-stage cost with the approximation of the second-stage cost (alpha)
+    m.obj = pyo.Objective(rule=Obj_first_stage, sense=pyo.minimize)
     return m
 
 
 
 #Subproblem: Define model setup
-def Second_stage_model(data, constants, x_hat):
+def Second_stage_model(data, constants, X_hat):
     
     m = pyo.ConcreteModel()
 
@@ -139,7 +141,7 @@ def Second_stage_model(data, constants, x_hat):
     m.C_grid = pyo.Param(m.T, initialize={t: data['Cost_grid'][t-1] for t in m.T})
     m.C_solar = pyo.Param(initialize=data['Cost_solar'])  # Solar cost is constant
     m.C_battery = pyo.Param(initialize=data['Cost_battery'])  # Battery cost is constant
-    m.penalty = 10000  # Large penalty for using the artificial variables
+    m.penalty = 10000000000000000000  # Large penalty for using the artificial variables
     m.C_exp = pyo.Param(m.T, initialize={t: 0.9 * data['Cost_grid'][t-1] for t in m.T})
     m.P_aFRR = pyo.Param(m.T, initialize=data['aFRR_price'])  # aFRR price
     
@@ -159,7 +161,7 @@ def Second_stage_model(data, constants, x_hat):
     m.pi = pyo.Param(m.S, initialize=constants["probs"])  # Probability of each scenario
     #Parameter for cuts
     
-    m.x_hat = pyo.Param(m.T, initialize = x_hat)
+    m.X_hat = pyo.Param(m.T, initialize = X_hat)
     # Variables 
     m.x_aFRR = pyo.Var(m.T, within=pyo.NonNegativeReals)  # aFRR reserve (first-stage decision)
     # Energy supply from sources with bounds
@@ -202,7 +204,7 @@ def Create_cuts(Cuts, m):
     # Add new lambda and x_hat values for the new cut
     for t in m.T:
         Cuts["lambda"][cut_it,t] = m.dual[m.Lambda_constraint[t]]
-        Cuts["x_hat"][cut_it,t] = pyo.value(m.x_hat[t])
+        Cuts["x_hat"][cut_it,t] = m.X_hat[t]
 
     return(Cuts)
 
@@ -241,7 +243,6 @@ def Benders_decomposition():
         #First stage result process with x_hat value using numerical indices
         x_hat = {t: pyo.value(m_first_stage.x_aFRR[t]) \
         for t in range(1, constants["time_periods"] + 1)}
-
     
         
         #Printing first stage results
@@ -293,13 +294,16 @@ def Benders_decomposition():
 def Stochastic_Dynamic_Programming():
     # Initial setup for SDP
     Minimum = 0
-    Maximum = 12 * 0.9 # Max aFRR participation
-    num_points = 13 #Antall diskrete punkter
+    Maximum = 12 * 0.9 # Max aFRR participation, adjusted for battery discharge efficiency
+    num_points = 2 #Antall diskrete punkter
     List_of_jumps = np.linspace(Minimum, Maximum, num_points).tolist()
     
     # Initial values for the decision variable in the first stage
     x_aFRR_initial_values_1 = List_of_jumps
     x_aFRR_initial_values_2 = List_of_jumps
+
+    import time
+    initial_time = time.time()
 
     import itertools
     List_combinations = [p for p in itertools.product(x_aFRR_initial_values_1,x_aFRR_initial_values_2)]
@@ -316,52 +320,57 @@ def Stochastic_Dynamic_Programming():
         "Time Period": [],
         "Scenario": [],        # Added "Scenario" key
         "x_hat": [],
+        "x_aFRR": [],
         "z_export": [],
         "y_supply": [],
         "q_charge": [],
         "q_discharge": [],
-        "e_storage": []
+        "e_storage": [],
+        "slack_energy": []
     }
 
     for initial_value in List_combinations:
         # Define x_hat as a dictionary indexed by time periods
-        x_hat = {1: initial_value[0], 2: initial_value[1]}
-        print(x_hat)
+        X_hat = {1: initial_value[0], 2: initial_value[1]}
+        print(X_hat)
         # If combination is valid, solve the second stage problem
-        if all(x_hat[t] <= Maximum  for t in x_hat):
+        if all(X_hat[t] <= Maximum  for t in X_hat):
             # Setup and solve the second-stage problem
-            m_second_stage = Second_stage_model(data, constants, x_hat)
+            m_second_stage = Second_stage_model(data, constants, X_hat)
             SolveModel(m_second_stage)
 
             # Create cuts for the first stage model
             Cuts = Create_cuts(Cuts, m_second_stage)
         else:
-            continue
+            pass
 
     # Solve the first stage with the created cuts
     m_first_stage = First_stage_model(data, constants, Cuts)
     SolveModel(m_first_stage)
 
-    # Get the value of x_hat from the first-stage solution
-    x_hat = {1: m_first_stage.x_aFRR[1], 2: m_first_stage.x_aFRR[2]}
+    # Get the value of X_hat from the first-stage solution
+    X_hat = {1: m_first_stage.x_aFRR[1], 2: m_first_stage.x_aFRR[2]}
 
-    for x in x_hat:
-        print(x, x_hat[x].value)
+    for x in X_hat:
+        print(x, X_hat[x].value)
     print(pyo.value(m_first_stage.alpha.value))
 
+    print(time.time() - initial_time)
     
 
    # Store the results for all scenarios in the dictionary
-    for t in x_hat:
+    for t in X_hat:
         for scenario in constants["scenarios"]:
             results["Time Period"].append(t)
             results["Scenario"].append(scenario)  # Storing scenario here
-            results["x_hat"].append(x_hat[t].value)
+            results["x_hat"].append(X_hat[t].value)
+            results["x_aFRR"].append(pyo.value(m_second_stage.x_aFRR[t]))
             results["z_export"].append(pyo.value(m_second_stage.z_export[t, scenario]))
             results["y_supply"].append(pyo.value(m_second_stage.y_supply[t, scenario, "Grid"]))
             results["q_charge"].append(pyo.value(m_second_stage.q_charge[t, scenario]))
             results["q_discharge"].append(pyo.value(m_second_stage.q_discharge[t, scenario]))
             results["e_storage"].append(pyo.value(m_second_stage.e_storage[t, scenario]))
+            results["slack_energy"].append(pyo.value(m_second_stage.slack_energy_balance[t, scenario]))
             
     
     # Create a DataFrame from the results
@@ -371,12 +380,13 @@ def Stochastic_Dynamic_Programming():
     excel_filename = "SDP_results.xlsx"
     df_results.to_excel(excel_filename, index=False)
 
+
     print(f"Results have been saved to {excel_filename}")
     return df_results
 
-
+    
 
 # Calling Benders
-Benders_decomposition()
+#Benders_decomposition()
 # Calling the function to execute and export results
-#Stochastic_Dynamic_Programming()
+Stochastic_Dynamic_Programming()
