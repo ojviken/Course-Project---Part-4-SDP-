@@ -32,7 +32,7 @@ data = {
     'Max_battery_capacity': 60,
     'Max_battery_charge_discharge': 12,
     #'Max_battery_discharge': 12,
-    'Grid_capacity': 500,
+    'Grid_capacity': 1000,
     'Initial_battery_storage': 12
 }
 
@@ -86,7 +86,7 @@ def ImportLimit(m, t, s):
 def SolarPowerLimit(m, t, s):
     return m.y_supply[t, s, 'Solar'] == m.G_solar[t, s]
 def ExportLimit_sec(m, t, s):
-    return m.z_export[t, s] + m.x_aFRR[t] <= m.G_max #+ m.slack_energy_balance[t, s]
+    return m.z_export[t, s] <= m.G_max #+ m.slack_energy_balance[t, s]
 def Lambda_constraint(m, t):
     return m.x_aFRR[t] == m.X_hat[t]
     
@@ -141,7 +141,7 @@ def Second_stage_model(data, constants, X_hat):
     m.C_grid = pyo.Param(m.T, initialize={t: data['Cost_grid'][t-1] for t in m.T})
     m.C_solar = pyo.Param(initialize=data['Cost_solar'])  # Solar cost is constant
     m.C_battery = pyo.Param(initialize=data['Cost_battery'])  # Battery cost is constant
-    m.penalty = 10000000000000000000  # Large penalty for using the artificial variables
+    m.penalty = 10000000000000000  # Large penalty for using the artificial variables
     m.C_exp = pyo.Param(m.T, initialize={t: 0.9 * data['Cost_grid'][t-1] for t in m.T})
     m.P_aFRR = pyo.Param(m.T, initialize=data['aFRR_price'])  # aFRR price
     
@@ -204,7 +204,9 @@ def Create_cuts(Cuts, m):
     # Add new lambda and x_hat values for the new cut
     for t in m.T:
         Cuts["lambda"][cut_it,t] = m.dual[m.Lambda_constraint[t]]
+        #print(m.dual[m.Lambda_constraint[t]])
         Cuts["x_hat"][cut_it,t] = m.X_hat[t]
+        #print(m.X_hat[t])
 
     return(Cuts)
 
@@ -212,8 +214,8 @@ def Create_cuts(Cuts, m):
 def SolveModel(m): 
     solver = SolverFactory('gurobi')
     m.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
-    results = solver.solve(m, tee=True)
-    
+    results = solver.solve(m, load_solutions=True)
+    #results = solver.solve(m, tee=True)
     return results, m
 
 def DisplayResults(m):
@@ -241,18 +243,18 @@ def Benders_decomposition():
         SolveModel(m_first_stage)
     
         #First stage result process with x_hat value using numerical indices
-        x_hat = {t: pyo.value(m_first_stage.x_aFRR[t]) \
+        X_hat = {t: pyo.value(m_first_stage.x_aFRR[t]) \
         for t in range(1, constants["time_periods"] + 1)}
     
         
         #Printing first stage results
         print(f"Iteration {i}")
-        for t in x_hat:
-            print(f"t{t}: {x_hat[t]}")
+        for t in X_hat:
+            print(f"t{t}: {X_hat[t]}")
         input()
 
         #Setup and solve 2nd stage problem
-        m_second_stage = Second_stage_model(data, constants, x_hat)
+        m_second_stage = Second_stage_model(data, constants, X_hat)
         SolveModel(m_second_stage)
 
         # Print the slack variables for each time period and scenario
@@ -295,7 +297,7 @@ def Stochastic_Dynamic_Programming():
     # Initial setup for SDP
     Minimum = 0
     Maximum = 12 * 0.9 # Max aFRR participation, adjusted for battery discharge efficiency
-    num_points = 2 #Antall diskrete punkter
+    num_points = 13 #Antall diskrete punkter
     List_of_jumps = np.linspace(Minimum, Maximum, num_points).tolist()
     
     # Initial values for the decision variable in the first stage
@@ -347,15 +349,20 @@ def Stochastic_Dynamic_Programming():
     # Solve the first stage with the created cuts
     m_first_stage = First_stage_model(data, constants, Cuts)
     SolveModel(m_first_stage)
+    #DisplayResults(m_first_stage)
 
     # Get the value of X_hat from the first-stage solution
     X_hat = {1: m_first_stage.x_aFRR[1], 2: m_first_stage.x_aFRR[2]}
+    opti = Second_stage_model(data, constants, X_hat)
+    SolveModel(opti)
+    #DisplayResults(opti)
 
     for x in X_hat:
-        print(x, X_hat[x].value)
-    print(pyo.value(m_first_stage.alpha.value))
-
-    print(time.time() - initial_time)
+        print(f"x_aFRR @t{x}, {X_hat[x].value}")
+    print(f"Alpha value: {pyo.value(m_first_stage.alpha.value)}")
+    print(f"Objective value: {pyo.value(m_first_stage.obj)}")
+    print(f"Objective value check: {pyo.value(m_first_stage.alpha.value) - sum(X_hat[x].value for x in X_hat)*1275}")
+    print(f"Computational time:  {time.time() - initial_time}")
     
 
    # Store the results for all scenarios in the dictionary
@@ -364,13 +371,13 @@ def Stochastic_Dynamic_Programming():
             results["Time Period"].append(t)
             results["Scenario"].append(scenario)  # Storing scenario here
             results["x_hat"].append(X_hat[t].value)
-            results["x_aFRR"].append(pyo.value(m_second_stage.x_aFRR[t]))
-            results["z_export"].append(pyo.value(m_second_stage.z_export[t, scenario]))
-            results["y_supply"].append(pyo.value(m_second_stage.y_supply[t, scenario, "Grid"]))
-            results["q_charge"].append(pyo.value(m_second_stage.q_charge[t, scenario]))
-            results["q_discharge"].append(pyo.value(m_second_stage.q_discharge[t, scenario]))
-            results["e_storage"].append(pyo.value(m_second_stage.e_storage[t, scenario]))
-            results["slack_energy"].append(pyo.value(m_second_stage.slack_energy_balance[t, scenario]))
+            results["x_aFRR"].append(pyo.value(opti.x_aFRR[t]))
+            results["z_export"].append(pyo.value(opti.z_export[t, scenario]))
+            results["y_supply"].append(pyo.value(opti.y_supply[t, scenario, "Grid"]))
+            results["q_charge"].append(pyo.value(opti.q_charge[t, scenario]))
+            results["q_discharge"].append(pyo.value(opti.q_discharge[t, scenario]))
+            results["e_storage"].append(pyo.value(opti.e_storage[t, scenario]))
+            results["slack_energy"].append(pyo.value(opti.slack_energy_balance[t, scenario]))
             
     
     # Create a DataFrame from the results
@@ -388,5 +395,6 @@ def Stochastic_Dynamic_Programming():
 
 # Calling Benders
 #Benders_decomposition()
-# Calling the function to execute and export results
+
+# Calling SDP
 Stochastic_Dynamic_Programming()
